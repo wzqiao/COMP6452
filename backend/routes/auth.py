@@ -16,21 +16,26 @@ def register():
     password = data.get("password", "")
     role     = data.get("role", "consumer")  # 默认消费者
 
+    # 邮箱或密码为空
     if not email or not password:
-        return jsonify(msg="email / password required"), 401
+        return jsonify(msg="invalid input"), 400
 
+    # 邮箱已存在
     if User.query.filter_by(email=email).first():
-        return jsonify(msg="email exists"), 403
+        return jsonify(msg="Email already exists"), 403
 
+    # 创建用户
     user = User(
         email=email,
         password_hash=generate_password_hash(password),
         role=role
     )
+
+    # 添加用户到数据库
     db.session.add(user)
     db.session.commit()
 
-    return jsonify(msg="registered"), 201
+    return jsonify(msg="User registered successfully"), 201
 
 
 # ---------- 登录 ----------
@@ -40,12 +45,20 @@ def login():
     email    = data.get("email", "").lower().strip()
     password = data.get("password", "")
 
+    # 省一个报错，前端要求必须两个字段都有才能请求，不验证字段是否填入了
+
+    # 查询用户
     user = User.query.filter_by(email=email).first()
-    if not user or not check_password_hash(user.password_hash, password):
-        return jsonify(msg="bad credentials"), 401
+
+    if not user:
+        return jsonify(msg="invalid email"), 403
+   
+    # 密码不匹配
+    if not check_password_hash(user.password_hash, password):
+        return jsonify(msg="password error"), 401
 
     token = create_access_token(
-        identity=user.id,
+        identity=str(user.id),
         additional_claims={"role": user.role}
     )
     return jsonify(access_token=token), 200

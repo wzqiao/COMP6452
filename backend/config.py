@@ -6,8 +6,8 @@ class Config:
     # Flask
     SECRET_KEY = os.getenv('SECRET_KEY', 'dev-secret-key')
     
-    # Database
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///app.db')
+    # Database 先用sqlite测试，后续migration到别处
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///sqlite_test.db')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     
     # JWT
