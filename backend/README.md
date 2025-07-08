@@ -24,7 +24,7 @@
 
 
 ## 后端B参考
-
+```
 项目文件结构
 backend/
 ├─ app.py                 # Flask 实例
@@ -59,3 +59,4 @@ backend/
 ├─test_auth.sh           # Auth任务下3个API的模拟测试，模拟发送 HTTP 请求
 │
 └─ init_db.py            # 开发阶段暂时用的SQLite，后边再migration
+```
