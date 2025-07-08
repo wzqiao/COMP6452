@@ -17,10 +17,10 @@ def register():
     role     = data.get("role", "consumer")  # 默认消费者
 
     if not email or not password:
-        return jsonify(msg="email / password required"), 400
+        return jsonify(msg="email / password required"), 401
 
     if User.query.filter_by(email=email).first():
-        return jsonify(msg="email exists"), 409
+        return jsonify(msg="email exists"), 403
 
     user = User(
         email=email,
