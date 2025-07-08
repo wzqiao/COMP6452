@@ -18,11 +18,11 @@ def register():
 
     # 邮箱或密码为空
     if not email or not password:
-        return jsonify(msg="invalid input"), 400
+        return jsonify(message="invalid input"), 400
 
     # 邮箱已存在
     if User.query.filter_by(email=email).first():
-        return jsonify(msg="Email already exists"), 403
+        return jsonify(message="Email already exists"), 403
 
     # 创建用户
     user = User(
@@ -51,17 +51,20 @@ def login():
     user = User.query.filter_by(email=email).first()
 
     if not user:
-        return jsonify(msg="invalid email"), 403
+        return jsonify(message="invalid email"), 403
    
     # 密码不匹配
     if not check_password_hash(user.password_hash, password):
-        return jsonify(msg="password error"), 401
+        return jsonify(message="password error"), 401
 
     token = create_access_token(
         identity=str(user.id),
         additional_claims={"role": user.role}
     )
-    return jsonify(access_token=token), 200
+    return jsonify(message="login success",
+        token=token,
+        role=user.role,
+        walletAddress=user.wallet), 200
 
 
 # ---------- 绑定钱包 ----------
@@ -73,9 +76,9 @@ def bind_wallet():
     wallet     = data.get("wallet", "")
 
     if not wallet.startswith("0x") or len(wallet) != 42:
-        return jsonify(msg="bad address"), 400
+        return jsonify(message="bad address,length not = 42"), 400
 
     user = User.query.get(current_id)
     user.wallet = wallet
     db.session.commit()
-    return jsonify(msg="wallet bound", wallet=wallet), 200
+    return jsonify(message="wallet bound", walletAddress=wallet), 200

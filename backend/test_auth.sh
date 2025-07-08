@@ -4,14 +4,14 @@
 echo "测试注册用户"
 curl -s -X POST http://127.0.0.1:5000/auth/register \
      -H "Content-Type: application/json" \
-     -d '{"email":"a@b.com","password":"123456"}'
+     -d '{"email":"aa@b.com","password":"123456"}'
 echo -e "\n"
 
 # 登录获取 token
 echo "测试登录获取 access_token"
 RESPONSE=$(curl -s -X POST http://127.0.0.1:5000/auth/login \
      -H "Content-Type: application/json" \
-     -d '{"email":"a@b.com","password":"123456"}')
+     -d '{"email":"aa@b.com","password":"123456"}')
 
 echo "$RESPONSE"
 TOKEN=$(echo $RESPONSE | python3 -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
