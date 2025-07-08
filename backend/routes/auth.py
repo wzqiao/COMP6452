@@ -1,0 +1,68 @@
+from flask import Blueprint, request, jsonify
+from extensions import db
+from flask_jwt_extended import (
+    create_access_token, jwt_required, get_jwt_identity
+)
+from werkzeug.security import generate_password_hash, check_password_hash
+from models.user import User
+
+auth_bp = Blueprint("auth", __name__)
+
+# ---------- 注册 ----------
+@auth_bp.post("/register")
+def register():
+    data = request.get_json() or {}
+    email    = data.get("email", "").lower().strip()
+    password = data.get("password", "")
+    role     = data.get("role", "consumer")  # 默认消费者
+
+    if not email or not password:
+        return jsonify(msg="email / password required"), 400
+
+    if User.query.filter_by(email=email).first():
+        return jsonify(msg="email exists"), 409
+
+    user = User(
+        email=email,
+        password_hash=generate_password_hash(password),
+        role=role
+    )
+    db.session.add(user)
+    db.session.commit()
+
+    return jsonify(msg="registered"), 201
+
+
+# ---------- 登录 ----------
+@auth_bp.post("/login")
+def login():
+    data = request.get_json() or {}
+    email    = data.get("email", "").lower().strip()
+    password = data.get("password", "")
+
+    user = User.query.filter_by(email=email).first()
+    if not user or not check_password_hash(user.password_hash, password):
+        return jsonify(msg="bad credentials"), 401
+
+    token = create_access_token(
+        identity=user.id,
+        additional_claims={"role": user.role}
+    )
+    return jsonify(access_token=token), 200
+
+
+# ---------- 绑定钱包 ----------
+@auth_bp.post("/wallet")
+@jwt_required()
+def bind_wallet():
+    current_id = get_jwt_identity()
+    data       = request.get_json() or {}
+    wallet     = data.get("wallet", "")
+
+    if not wallet.startswith("0x") or len(wallet) != 42:
+        return jsonify(msg="bad address"), 400
+
+    user = User.query.get(current_id)
+    user.wallet = wallet
+    db.session.commit()
+    return jsonify(msg="wallet bound", wallet=wallet), 200
