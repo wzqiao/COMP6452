@@ -15,8 +15,6 @@ class User(db.Model):
     role          = db.Column(db.String(10), default="producer")   # producer / inspector, cunsumer不用注册
     # 钱包地址，字符串最多 66 字符，可为空
     wallet        = db.Column(db.String(66))                       # 0x…. 钱包地址
-    # 创建时间，默认值为当前时间
-    created_at    = db.Column(db.DateTime, default=datetime.utcnow)
 
     def __repr__(self):
         return f"<User {self.email}>"
