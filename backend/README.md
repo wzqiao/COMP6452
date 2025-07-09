@@ -11,9 +11,10 @@
 | **Inspection** | POST | `/batches/{id}/inspection` | 提交检验结果 `pass│fail` ＋ PDF URL，并写链 | processing            |
 
 **关于pdf upload的API**
-预签名的生成服务和返回交给lambda + API Gateway处理了，利用token对称加密，环境变量设置暂时与config.py中保持同步，后续.env最后提交再修改。
+预签名的生成服务和返回交给lambda + API Gateway处理了，利用token对称加密，环境变量设置暂时与config.py中保持同步，后续.env最后提交再修改
 
-该服务与本地flask独立，可以直接测试，ApiFox中说明已更新
+该服务与本地flask独立，可以直接测试，ApiFox中说明已更新。
+
 
 ## 前端调试启动
 1. pull repo，
@@ -57,7 +58,9 @@ backend/
 │
 ├─ migrations/
 │
-├─test_auth.sh           # Auth任务下3个API的模拟测试，模拟发送 HTTP 请求
+├─ Lambda.py              #托管函数，与本地flask无关
+│
+├─ test_auth.sh           # Auth任务下3个API的模拟测试，模拟发送 HTTP 请求
 │
 └─ init_db.py            # 开发阶段暂时用的SQLite，后边再migration
 ```
