@@ -1,3 +1,4 @@
 from extensions import db
 from .user import User
-# 以后再 from .batch import Batch ...
+from .batch import Batch
+from .inspection import Inspection
