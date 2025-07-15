@@ -4,9 +4,11 @@ from extensions import db, jwt, cors
 from routes.auth import auth_bp
 from routes.batch import batch_bp
 from routes.inspection import inspection_bp
+from flask_cors import CORS
 
 def create_app():
     app = Flask(__name__)
+    CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
     app.config.from_object(Config)
 
     db.init_app(app)
