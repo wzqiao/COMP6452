@@ -18,7 +18,7 @@ def create_app():
     # 注册路由
     app.register_blueprint(auth_bp, url_prefix="/auth")
     app.register_blueprint(batch_bp, url_prefix="/batches")
-    app.register_blueprint(inspection_bp, url_prefix="/api")
+    app.register_blueprint(inspection_bp, url_prefix="")
 
     return app
 
