@@ -14,6 +14,11 @@ class Config:
     JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', '6452-jwt-secret-key')
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(minutes=30)
     
+    # CORS配置 - 允许前端跨域访问
+    CORS_ORIGINS = ['http://localhost:5173', 'http://127.0.0.1:5173']
+    CORS_ALLOW_HEADERS = ['Content-Type', 'Authorization']
+    CORS_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+    
     # 换lambda了，后端不生成预签名+处理，前端直接调用lambda
     # # AWS (placeholder values)
     # AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID', 'dummy-access-key')
