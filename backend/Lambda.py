@@ -1,61 +1,47 @@
-import json
-import boto3
-import os
-import jwt
+import json, os, boto3, jwt
 
 s3 = boto3.client('s3')
-JWT_SECRET = os.environ['JWT_SECRET_KEY']
+JWT_SECRET  = os.environ['JWT_SECRET_KEY']
 BUCKET_NAME = os.environ['BUCKET_NAME']
 
-CORS_HEADERS = {
-    'Access-Control-Allow-Origin': 'http://localhost:5173',
-    'Access-Control-Allow-Headers': 'Content-Type,Authorization',
-    'Access-Control-Allow-Methods': 'OPTIONS,POST'
+CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Access-Control-Allow-Methods": "OPTIONS,POST"
 }
 
-def lambda_handler(event, context):
+def ok(body):  return {"statusCode": 200, "headers": CORS, "body": json.dumps(body)}
+def err(code,msg): return {"statusCode": code, "headers": CORS, "body": json.dumps({"error": msg})}
+
+def lambda_handler(event, _):
+    m = event.get("requestContext", {}).get("http", {}).get("method")
+    print("METHOD =", m)
+
+    # 1) 预检
+    if m == "OPTIONS":
+        return {"statusCode": 200, "headers": CORS}
+
+    # 2) 取并校验 JWT（大小写兼容）
     try:
-        # 验证 JWT 是否有效
-        auth_header = event['headers'].get('Authorization', '')
-        token = auth_header.replace('Bearer ', '')
-        decoded = jwt.decode(token, JWT_SECRET, algorithms=['HS256'])
-        user_id = decoded['sub']
+        hdrs  = event.get("headers", {})
+        token = (hdrs.get("Authorization") or hdrs.get("authorization") or "").replace("Bearer ", "")
+        user  = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])["sub"]
     except Exception as e:
-        return {
-            'statusCode': 401,
-            'headers': CORS_HEADERS,
-            'body': json.dumps({'error': 'Invalid token'})
-        }
+        print("JWT 失败:", e)
+        return err(401, "invalid token")
 
+    # 3) 解析 JSON body
     try:
-        body = json.loads(event['body'])
-        filename = body.get('filename')
-        if not filename:
-            raise ValueError("Missing filename")
-    except:
-        return {
-            'statusCode': 400,
-            'headers': CORS_HEADERS,
-            'body': json.dumps({'error': 'Missing filename'})
-        }
-
-    s3_key = f"{user_id}/{filename}"
-
-    try:
-        url = s3.generate_presigned_url(
-            'put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': s3_key},
-            ExpiresIn=300
-        )
+        filename = json.loads(event.get("body","{}"))["filename"]
     except Exception as e:
-        return {
-            'statusCode': 500,
-            'headers': CORS_HEADERS,
-            'body': json.dumps({'error': str(e)})
-        }
+        print("Body 失败:", e)
+        return err(400, "missing filename")
 
-    return {
-        'statusCode': 200,
-        'headers': CORS_HEADERS,
-        'body': json.dumps({'url': url})
-    }
+    # 4) 生成 S3 预签名 URL
+    url = s3.generate_presigned_url(
+        "put_object",
+        Params={"Bucket": BUCKET_NAME, "Key": f"{user}/{filename}"},
+        ExpiresIn=300
+    )
+
+    return ok({"url": url})
