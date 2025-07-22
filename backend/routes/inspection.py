@@ -372,7 +372,6 @@ def get_inspection(inspection_id):
                 'insp_date': inspection.insp_date.isoformat(),
                 'blockchain_tx': inspection.blockchain_tx,
                 'created_at': inspection.created_at.isoformat(),
-                'updated_at': inspection.updated_at.isoformat()
             },
             'batch': {
                 'id': batch.id,

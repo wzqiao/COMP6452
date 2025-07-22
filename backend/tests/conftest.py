@@ -14,7 +14,6 @@ from models import User, Batch
 
 @pytest.fixture
 def app():
-    """创建测试应用"""
 
     db_fd, db_path = tempfile.mkstemp()
     
@@ -154,3 +153,61 @@ def auth_headers_producer(producer_token):
         return {'Authorization': f'Bearer {producer_token}'}
     else:
         return {}
+
+
+@pytest.fixture
+def test_inspection(app, test_batch, test_inspector):
+    with app.app_context():
+        from models import Inspection
+        
+        inspection = Inspection(
+            batch_id=test_batch['id'],
+            inspector_id=test_inspector['id'],
+            result='passed',
+            file_url='https://example.com/test-inspection.pdf',
+            notes='Test inspection record',
+            blockchain_tx='0x123456789abcdef'
+        )
+        db.session.add(inspection)
+        db.session.commit()
+        
+        inspection_dict = {
+            'id': inspection.id,
+            'batch_id': inspection.batch_id,
+            'inspector_id': inspection.inspector_id,
+            'result': inspection.result,
+            'file_url': inspection.file_url,
+            'notes': inspection.notes,
+            'blockchain_tx': inspection.blockchain_tx,
+            'insp_date': inspection.insp_date.isoformat() if inspection.insp_date else None,
+            'created_at': inspection.created_at.isoformat() if inspection.created_at else None
+        }
+        
+        return inspection_dict
+
+@pytest.fixture
+def test_inspector(app):
+    with app.app_context():
+        from werkzeug.security import generate_password_hash
+        
+        existing_user = User.query.filter_by(email='inspector@test.com').first()
+        if existing_user:
+            return {
+                'id': existing_user.id,
+                'email': existing_user.email,
+                'role': existing_user.role
+            }
+        
+        user = User(
+            email='inspector@test.com',
+            password_hash=generate_password_hash('password123'),
+            role='inspector'
+        )
+        db.session.add(user)
+        db.session.commit()
+        
+        return {
+            'id': user.id,
+            'email': user.email,
+            'role': user.role
+        }
