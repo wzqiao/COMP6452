@@ -5,6 +5,10 @@ from models.batch import Batch
 from models.user import User
 from services.batch_service import BatchService
 from extensions import db
+from web3 import Web3
+from deploy_config import get_network_config, get_contract_address, get_contract_abi
+import time
+from models.inspection import Inspection
 
 batch_bp = Blueprint('batch', __name__)
 
@@ -62,21 +66,133 @@ def create_batch():
         if not metadata.get('batchNumber'):
             metadata['batchNumber'] = BatchService.get_next_batch_number()
         
-        # 7. 创建批次
+        # 🔧 7. 区块链集成 - 创建批次到区块链（必须成功）
+        blockchain_tx = None
+        blockchain_owner = None
+        
+        print(f"Creating batch on blockchain: {metadata['batchNumber']}")
+        
+        # 连接区块链
+        network_config = get_network_config('testnet')
+        w3 = Web3(Web3.HTTPProvider(network_config['rpc_url']))
+        
+        if not w3.is_connected():
+            raise Exception("Failed to connect to blockchain network")
+        
+        # 获取合约实例
+        batch_address = get_contract_address('BatchRegistry', 'testnet')
+        batch_abi = get_contract_abi('BatchRegistry')
+        contract = w3.eth.contract(address=batch_address, abi=batch_abi)
+        
+        # 准备合约参数
+        batch_number = metadata['batchNumber']
+        product_name = metadata['productName']
+        origin = metadata['origin']
+        quantity = int(float(metadata['quantity']))
+        unit = metadata['unit']
+        
+        # 处理日期 - 保持原有的数据库格式，但转换为时间戳给合约
+        harvest_date = convert_date_for_contract(metadata.get('harvestDate'))
+        expiry_date = convert_date_for_contract(metadata.get('expiryDate'))
+        
+        # 获取私钥
+        from deploy_config import DEVELOPMENT_PRIVATE_KEYS
+        private_key = DEVELOPMENT_PRIVATE_KEYS.get('owner')
+        
+        if not private_key:
+            raise Exception("No private key configured for blockchain transactions")
+        
+        # 创建账户
+        account = w3.eth.account.from_key(private_key)
+        blockchain_owner = account.address  # 保存区块链owner地址
+        
+        # 构建交易
+        transaction = contract.functions.createBatch(
+            batch_number,
+            product_name,
+            origin,
+            quantity,
+            unit,
+            harvest_date,
+            expiry_date
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 500000,
+            'gasPrice': w3.to_wei('20', 'gwei'),
+        })
+        
+        # 签名并发送交易
+        signed_txn = w3.eth.account.sign_transaction(transaction, private_key)
+        tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        
+        print(f"Transaction sent: {tx_hash.hex()}")
+        
+        # 等待交易确认
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+        
+        if receipt.status != 1:
+            raise Exception("Blockchain transaction failed")
+        
+        blockchain_tx = tx_hash.hex()
+        print(f"✅ Batch created on blockchain successfully: {blockchain_tx}")
+        
+        # 8. 只有区块链成功后才创建批次到数据库
         batch = Batch.from_dict({'metadata': metadata}, owner_id=int(current_user_id))
         
-        # 8. 保存到数据库
+        # 保存区块链交易哈希
+        batch.blockchain_tx = blockchain_tx
+        
+        # 9. 保存到数据库
         db.session.add(batch)
         db.session.commit()
         
-        # 9. 返回成功响应（包含警告信息）
+        # 10. 构建完整的响应数据 - 包含所有必要字段
+        import time
+        current_timestamp = int(time.time())
+        
+        # 确保metadata包含时间戳
+        if 'createdAt' not in metadata:
+            metadata['createdAt'] = current_timestamp
+        if 'timestamp' not in metadata:
+            metadata['timestamp'] = current_timestamp
+        
         response_data = {
             'batchId': batch.id,
             'message': 'Batch created successfully',
             'status': batch.status,
-            'batchNumber': batch.batch_number
+            'batchNumber': batch.batch_number,
+            
+            # 添加完整的批次信息
+            'exists': True,
+            'fileUrl': getattr(batch, 'file_url', 'none'),
+            'result': getattr(batch, 'result', 'none'),
+            'inspections': getattr(batch, 'inspections', []),
+            'timestamp': current_timestamp,
+            
+            # 完整的metadata
+            'metadata': metadata,
+            
+            # 状态信息
+            'statusInfo': {
+                'status': batch.status,
+                'display': batch.status,
+                'color': 'orange' if batch.status == 'pending' else 'green'
+            },
+            
+            # 区块链信息
+            'blockchainTx': blockchain_tx,
+            'blockchain': {
+                'success': True,
+                'transactionHash': blockchain_tx,
+                'message': 'Batch saved to blockchain and database'
+            },
+            
+            # 区块链owner地址
+            'owner': blockchain_owner
         }
         
+        # 添加警告信息（如果有）
         if validation_result['warnings']:
             response_data['warnings'] = validation_result['warnings']
         
@@ -91,10 +207,53 @@ def create_batch():
         
     except Exception as e:
         db.session.rollback()
+        print(f"❌ Batch creation failed: {str(e)}")
         return jsonify({
-            'error': 'Internal server error',
-            'message': 'Failed to create batch'
+            'error': 'Failed to create batch',
+            'message': 'Blockchain or database operation failed',
+            'details': str(e)
         }), 500
+        
+def convert_date_for_contract(date_str):
+    """
+    转换日期为合约需要的时间戳格式
+    保持与原有系统兼容，只是为区块链转换
+    """
+    try:
+        if not date_str:
+            return int(time.time())
+        
+        # 如果是字符串日期格式，转换为时间戳
+        if isinstance(date_str, str):
+            # 尝试解析常见的日期格式
+            from datetime import datetime
+            
+            # 尝试不同的日期格式
+            date_formats = [
+                '%Y-%m-%d',
+                '%d/%m/%Y', 
+                '%m/%d/%Y',
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%d %H:%M:%S'
+            ]
+            
+            for fmt in date_formats:
+                try:
+                    dt = datetime.strptime(date_str, fmt)
+                    return int(dt.timestamp())
+                except ValueError:
+                    continue
+        
+        # 如果已经是时间戳，直接返回
+        if isinstance(date_str, (int, float)):
+            return int(date_str)
+        
+        # 如果都失败了，使用当前时间
+        return int(time.time())
+        
+    except Exception as e:
+        print(f"Date conversion error: {e}, using current timestamp")
+        return int(time.time())
 
 
 @batch_bp.route('/<int:batch_id>', methods=['GET'])
@@ -136,58 +295,179 @@ def get_batch(batch_id):
 @batch_bp.route('', methods=['GET'])
 def list_batches():
     """
-    查询批次列表
+    Query batch list - Read from database (matching blockchain format)
     GET /batches
     """
     try:
-        # 获取查询参数
+        # Get query parameters
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 10, type=int)
         status = request.args.get('status')
         
-        # 构建查询
+        # 🔄 从数据库查询批次
         query = Batch.query
         
-        # 状态过滤
+        # Filter by status if specified
         if status:
-            # 使用BatchService验证状态有效性
-            if status not in BatchService.VALID_STATUSES:
-                return jsonify({
-                    'error': 'Invalid status',
-                    'message': f'Valid statuses: {", ".join(BatchService.VALID_STATUSES)}'
-                }), 400
-            query = query.filter_by(status=status)
+            query = query.filter(Batch.status == status)
         
-        # 分页查询
-        batches = query.paginate(
-            page=page, 
-            per_page=per_page, 
-            error_out=False
-        )
+        # 🎯 按批次ID排序（升序：1, 2, 3...）
+        query = query.order_by(Batch.id.asc())
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        batches_db = pagination.items
         
-        # 为每个批次添加额外信息
+        # Get all batch data
         batch_list = []
-        for batch in batches.items:
-            batch_data = batch.to_dict()
-            # 添加状态显示信息
-            batch_data['statusInfo'] = BatchService.get_status_display_info(batch.status)
-            batch_list.append(batch_data)
+        for batch in batches_db:
+            try:
+                # 转换日期为时间戳（匹配区块链格式）
+                harvest_timestamp = 0
+                expiry_timestamp = 0
+                
+                if batch.harvest_date:
+                    from datetime import datetime, time
+                    harvest_datetime = datetime.combine(batch.harvest_date, time())
+                    harvest_timestamp = int(harvest_datetime.timestamp())
+                
+                if batch.expiry_date:
+                    from datetime import datetime, time
+                    expiry_datetime = datetime.combine(batch.expiry_date, time())
+                    expiry_timestamp = int(expiry_datetime.timestamp())
+                
+                # Get inspection data for this batch
+                result = 'none'
+                file_url = 'none'
+                inspections_list = []
+                
+                try:
+                    # Get all inspection records for this batch
+                    inspections = Inspection.query.filter_by(batch_id=batch.id)\
+                                                .order_by(Inspection.created_at.desc())\
+                                                .all()
+                    
+                    if inspections:
+                        # Get latest inspection details
+                        latest_inspection = inspections[0]
+                        result = latest_inspection.result
+                        file_url = latest_inspection.file_url if latest_inspection.file_url else 'none'
+                        
+                        # Build inspections list (matching blockchain format)
+                        for inspection in inspections:
+                            # Get inspector info
+                            inspector = User.query.get(inspection.inspector_id)
+                            inspector_id = inspector.email if inspector else str(inspection.inspector_id)
+                            
+                            inspections_list.append({
+                                'batchId': batch.id,
+                                'blockchainTx': inspection.blockchain_tx,
+                                'fileUrl': inspection.file_url if inspection.file_url else 'none',
+                                'inspDate': int(inspection.insp_date.timestamp()),
+                                'inspId': inspection.id,
+                                'inspectorId': inspector_id,
+                                'notes': inspection.notes if inspection.notes else 'No notes',
+                                'result': inspection.result
+                            })
+                
+                except Exception as e:
+                    # Keep default values if inspection fetch fails
+                    pass
+                
+                # Convert database data to frontend format (matching blockchain format exactly)
+                batch_dict = {
+                    'batchId': batch.id,
+                    'blockchainTx': batch.blockchain_tx,
+                    'inspections': inspections_list,
+                    'metadata': {
+                        'batchNumber': batch.batch_number,
+                        'productName': batch.product_name,
+                        'origin': batch.origin,
+                        'quantity': str(batch.quantity),
+                        'unit': batch.unit,
+                        'harvestDate': harvest_timestamp,  # 🎯 时间戳格式，匹配区块链
+                        'expiryDate': expiry_timestamp,    # 🎯 时间戳格式，匹配区块链
+                        'createdAt': int(batch.created_at.timestamp()),
+                        'organic': batch.organic,
+                        'import': batch.import_product,
+                        'totalWeightKg': batch.total_weight_kg or 0,
+                    },
+                    'status': batch.status,  # 🎯 从数据库读取状态
+                    'owner': getattr(batch, 'owner_address', ''),
+                    'timestamp': int(batch.created_at.timestamp()),
+                    'exists': True,
+                    'result': result,
+                    'fileUrl': file_url
+                }
+                
+                # Add status display info
+                batch_dict['statusInfo'] = get_status_display_info(batch.status)
+                
+                batch_list.append(batch_dict)
+                
+            except Exception as e:
+                continue
+        
+        # Filter by status if specified (after building the list)
+        if status:
+            batch_list = [b for b in batch_list if b['status'] == status]
+        
+        # Simple pagination
+        start_index = (page - 1) * per_page
+        end_index = start_index + per_page
+        paginated_batches = batch_list[start_index:end_index]
         
         return jsonify({
-            'batches': batch_list,
+            'batches': paginated_batches,
             'pagination': {
-                'page': batches.page,
-                'per_page': batches.per_page,
-                'total': batches.total,
-                'pages': batches.pages
+                'page': page,
+                'per_page': per_page,
+                'total': len(batch_list),
+                'pages': (len(batch_list) + per_page - 1) // per_page
             }
         }), 200
         
     except Exception as e:
+        print(f"Error in list_batches: {e}")
         return jsonify({
             'error': 'Internal server error',
-            'message': 'Failed to retrieve batches'
+            'message': f'Failed to retrieve batches: {str(e)}'
         }), 500
+
+def convert_date_for_display(date_value):
+    try:
+        if not date_value:
+            return None  # 返回None而不是当前时间戳
+        
+        # 如果是字符串日期格式，转换为时间戳
+        if isinstance(date_value, str):
+            from datetime import datetime
+            
+            # 尝试不同的日期格式
+            date_formats = [
+                '%Y-%m-%d',
+                '%d/%m/%Y', 
+                '%m/%d/%Y',
+                '%Y-%m-%dT%H:%M:%S',
+                '%Y-%m-%d %H:%M:%S'
+            ]
+            
+            for fmt in date_formats:
+                try:
+                    dt = datetime.strptime(date_value, fmt)
+                    return int(dt.timestamp())
+                except ValueError:
+                    continue
+        
+        # 如果已经是时间戳，直接返回
+        if isinstance(date_value, (int, float)):
+            return int(date_value)
+        
+        # 如果都失败了，返回None而不是当前时间
+        return None
+        
+    except Exception as e:
+        print(f"Date conversion error: {e}")
+        return None
+
 
 
 @batch_bp.route('/<int:batch_id>/status', methods=['PUT'])
@@ -259,3 +539,130 @@ def update_batch_status(batch_id):
             'error': 'Internal server error',
             'message': 'Failed to update batch status'
         }), 500
+        
+
+def convert_contract_status_to_string(status_code):
+    """将合约状态码转换为字符串"""
+    status_mapping = {
+        0: 'pending',     # PENDING
+        1: 'inspected',   # INSPECTED  
+        2: 'approved',    # APPROVED
+        3: 'rejected'     # REJECTED
+    }
+    return status_mapping.get(status_code, 'pending')
+
+
+def get_status_display_info(status):
+    """获取状态显示信息"""
+    status_info = {
+        'pending': {
+            'color': 'orange',
+            'display': 'pending',
+            'status': 'pending'
+        },
+        'inspected': {
+            'color': 'blue', 
+            'display': 'inspected',
+            'status': 'inspected'
+        },
+        'approved': {
+            'color': 'green',
+            'display': 'approved', 
+            'status': 'approved'
+        },
+        'rejected': {
+            'color': 'red',
+            'display': 'rejected',
+            'status': 'rejected'
+        }
+    }
+    return status_info.get(status, status_info['pending'])
+def convert_inspection_result_to_string(result_code):
+    """将检验结果码转换为字符串"""
+    result_mapping = {
+        0: 'pending',
+        1: 'passed', 
+        2: 'failed',
+        3: 'needs_recheck'
+    }
+    return result_mapping.get(result_code, 'none')
+
+
+@batch_bp.route('/debug/compare/<int:batch_id>', methods=['GET'])
+def compare_batch_status(batch_id):
+    """对比数据库和区块链的批次状态"""
+    try:
+        # 查询数据库
+        batch = Batch.query.get(batch_id)
+        db_status = batch.status if batch else "Not found"
+        
+        # 查询区块链
+        network_config = get_network_config('testnet')
+        w3 = Web3(Web3.HTTPProvider(network_config['rpc_url']))
+        batch_address = get_contract_address('BatchRegistry', 'testnet')
+        batch_abi = get_contract_abi('BatchRegistry')
+        contract = w3.eth.contract(address=batch_address, abi=batch_abi)
+        
+        batch_data = contract.functions.getBatch(batch_id).call()
+        blockchain_status = convert_contract_status_to_string(batch_data[8])
+        
+        return jsonify({
+            'batch_id': batch_id,
+            'database_status': db_status,
+            'blockchain_status': blockchain_status,
+            'match': db_status == blockchain_status
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)})
+
+@batch_bp.route('/debug/inspector-auth', methods=['GET'])
+def check_inspector_auth():
+    try:
+        # 获取当前使用的账户地址
+        from deploy_config import DEVELOPMENT_PRIVATE_KEYS
+        private_key = DEVELOPMENT_PRIVATE_KEYS.get('inspector1')
+        if not private_key:
+            private_key = DEVELOPMENT_PRIVATE_KEYS.get('owner')
+        
+        if not private_key:
+            return jsonify({'error': 'No private key found'}), 400
+        
+        # 连接区块链
+        network_config = get_network_config('testnet')
+        w3 = Web3(Web3.HTTPProvider(network_config['rpc_url']))
+        account = w3.eth.account.from_key(private_key)
+        
+        # 检查InspectionManager权限
+        inspection_address = get_contract_address('InspectionManager', 'testnet')
+        inspection_abi = get_contract_abi('InspectionManager')
+        inspection_contract = w3.eth.contract(address=inspection_address, abi=inspection_abi)
+        
+        # 检查BatchRegistry权限
+        batch_address = get_contract_address('BatchRegistry', 'testnet')
+        batch_abi = get_contract_abi('BatchRegistry')
+        batch_contract = w3.eth.contract(address=batch_address, abi=batch_abi)
+        
+        # 获取权限状态
+        inspection_auth = inspection_contract.functions.isAuthorizedInspector(account.address).call()
+        batch_auth = batch_contract.functions.isAuthorizedInspector(account.address).call()
+        
+        # 获取余额
+        balance = w3.eth.get_balance(account.address)
+        balance_eth = w3.from_wei(balance, 'ether')
+        
+        return jsonify({
+            'account_address': account.address,
+            'inspection_manager_auth': inspection_auth,
+            'batch_registry_auth': batch_auth,
+            'balance_eth': float(balance_eth),
+            'balance_wei': str(balance),
+            'network': network_config['name'],
+            'contracts': {
+                'inspection_manager': inspection_address,
+                'batch_registry': batch_address
+            }
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
