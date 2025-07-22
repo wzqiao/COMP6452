@@ -11,6 +11,16 @@ export default function ConsumerPage({ onLogout }) {
   const [filterOrganic, setFilterOrganic] = useState("");
   const [filterImport, setFilterImport] = useState("");
 
+  // 时间戳转换函数
+  const formatDate = (timestamp) => {
+    if (!timestamp) return "N/A";
+    try {
+      return new Date(timestamp * 1000).toLocaleDateString();
+    } catch (error) {
+      return "Invalid Date";
+    }
+  };
+
   useEffect(() => {
     const fetchBatches = async () => {
       try {
@@ -33,35 +43,38 @@ export default function ConsumerPage({ onLogout }) {
 
   useEffect(() => {
     let filtered = [...batches];
-  
+
+    // 按批次ID搜索
     if (searchId.trim()) {
       filtered = filtered.filter((b) =>
         b.batchId.toString().includes(searchId.trim())
       );
     }
-  
+
+    // 按状态筛选
     if (filterResult) {
       filtered = filtered.filter((b) => {
-        const result = b.inspections?.[0]?.result || "none";
-        return result === filterResult;
+        const status = b.status || "unknown";
+        return status === filterResult;
       });
     }
-  
+
+    // 按有机标准筛选
     if (filterOrganic) {
       filtered = filtered.filter(
         (b) => String(b.metadata?.organic) === filterOrganic
       );
     }
-  
+
+    // 按进口标准筛选
     if (filterImport) {
       filtered = filtered.filter(
         (b) => String(b.metadata?.import) === filterImport
       );
     }
-  
+
     setFilteredBatches(filtered);
   }, [searchId, filterResult, filterOrganic, filterImport, batches]);
-  
 
   return (
     <div className="container py-5">
@@ -89,11 +102,11 @@ export default function ConsumerPage({ onLogout }) {
             value={filterResult}
             onChange={(e) => setFilterResult(e.target.value)}
           >
-            <option value="">All Results</option>
-            <option value="passed">passed</option>
-            <option value="failed">failed</option>
-            <option value="needs_recheck">needs_recheck</option>
-            <option value="none">none</option>
+            <option value="">All Status</option>
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+            <option value="pending">pending</option>
+            <option value="inspected">inspected</option>
           </select>
         </div>
         <div className="col-md-3 mb-2">
@@ -134,7 +147,7 @@ export default function ConsumerPage({ onLogout }) {
               <tr>
                 <th>Batch ID</th>
                 <th>Product Name</th>
-                <th>Result</th>
+                <th>Status</th>
                 <th>File URL</th>
                 <th>Blockchain TX</th>
                 <th>Organic</th>
@@ -145,42 +158,104 @@ export default function ConsumerPage({ onLogout }) {
             </thead>
             <tbody>
               {filteredBatches.map((batch) => {
-                const firstInspection = batch.inspections?.[0];
                 const metadata = batch.metadata || {};
 
                 return (
                   <tr key={batch.batchId}>
                     <td>{batch.batchId}</td>
                     <td>{metadata.productName || "N/A"}</td>
-                    <td>{firstInspection?.result || "none"}</td>
+
+                    {/* Status */}
                     <td>
-                      {firstInspection?.fileUrl ? (
+                      <span
+                        className={`badge ${
+                          batch.status === "approved"
+                            ? "bg-success"
+                            : batch.status === "rejected"
+                            ? "bg-danger"
+                            : batch.status === "pending"
+                            ? "bg-warning"
+                            : "bg-secondary"
+                        }`}
+                      >
+                        {batch.status || "unknown"}
+                      </span>
+                    </td>
+
+                    {/* File URL */}
+                    <td>
+                      {batch.fileUrl && batch.fileUrl !== "none" ? (
                         <a
-                          href={firstInspection.fileUrl}
+                          href={batch.fileUrl}
                           target="_blank"
                           rel="noopener noreferrer"
+                          className="text-decoration-none"
                         >
-                          {firstInspection.fileUrl}
+                          {batch.fileUrl}
                         </a>
                       ) : (
-                        "none"
+                        <span className="text-muted">none</span>
                       )}
                     </td>
-                    <td className="font-monospace text-break">
-                      {batch.blockchainTx || "none"}
+
+                    {/* Blockchain TX */}
+                    <td
+                      className="font-monospace text-break"
+                      style={{ maxWidth: "200px" }}
+                    >
+                      {batch.blockchainTx ? (
+                        <small>{batch.blockchainTx}</small>
+                      ) : (
+                        <span className="text-muted">none</span>
+                      )}
                     </td>
-                    <td>{String(metadata.organic)}</td>
-                    <td>{String(metadata.import)}</td>
-                    <td>{metadata.harvestDate || "N/A"}</td>
-                    <td>{metadata.expiryDate || "N/A"}</td>
+
+                    {/* Organic */}
+                    <td>
+                      <span
+                        className={`badge ${
+                          metadata.organic ? "bg-success" : "bg-secondary"
+                        }`}
+                      >
+                        {String(metadata.organic)}
+                      </span>
+                    </td>
+
+                    {/* Import */}
+                    <td>
+                      <span
+                        className={`badge ${
+                          metadata.import ? "bg-info" : "bg-secondary"
+                        }`}
+                      >
+                        {String(metadata.import)}
+                      </span>
+                    </td>
+
+                    {/* Harvest Date */}
+                    <td>{formatDate(metadata.harvestDate)}</td>
+
+                    {/* Expiry Date */}
+                    <td>{formatDate(metadata.expiryDate)}</td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
           {filteredBatches.length === 0 && (
-            <div className="text-muted">No matching batches found.</div>
+            <div className="text-center text-muted py-4">
+              No matching batches found.
+            </div>
           )}
+        </div>
+      )}
+
+      {/* 数据统计信息 */}
+      {!loading && !error && (
+        <div className="mt-3 text-muted small">
+          Showing {filteredBatches.length} of {batches.length} batches from
+          blockchain
+          {filteredBatches.length !== batches.length && ` (filtered)`}
         </div>
       )}
     </div>
