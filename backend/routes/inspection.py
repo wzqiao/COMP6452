@@ -13,8 +13,16 @@ import logging
 from models.batch import Batch
 from models.inspection import Inspection
 from models.user import User
-from services.blockchain import get_blockchain_service, BlockchainError, ContractNotFoundError
+from blockchain import get_blockchain_service, BlockchainError, ContractNotFoundError
 from extensions import db
+from web3 import Web3
+from deploy_config import (
+    get_network_config, 
+    get_contract_address, 
+    get_contract_abi, 
+    DEVELOPMENT_PRIVATE_KEYS 
+)
+
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -27,131 +35,191 @@ inspection_bp = Blueprint('inspection', __name__)
 @jwt_required()
 def submit_inspection(batch_id):
     """
-    提交检验结果
+    Submit inspection result for a batch
     
     POST /batches/{id}/inspection
-    
-    请求体：
-    {
-        "result": "passed|failed|needs_recheck",
-        "file_url": "https://...",
-        "notes": "检验备注",
-        "insp_date": "2024-01-01T10:00:00" (可选，默认当前时间)
-    }
     """
     try:
-        # 获取当前用户
+        # 1. User validation
         current_user_id = get_jwt_identity()
         current_user = User.query.get(current_user_id)
         
         if not current_user:
-            return jsonify({'error': '用户不存在'}), 401
+            return jsonify({'error': 'User not found'}), 401
         
-        # 验证用户角色（检验员）
         if current_user.role != 'inspector':
-            return jsonify({'error': '只有检验员可以提交检验结果'}), 403
+            return jsonify({'error': 'Access denied. Only inspectors can submit inspection results'}), 403
         
-        # 验证批次存在
+        # 2. Batch validation
         batch = Batch.query.get(batch_id)
         if not batch:
-            return jsonify({'error': '批次不存在'}), 404
+            return jsonify({'error': 'Batch not found'}), 404
         
-        # 验证批次状态
-        if batch.status != 'pending':
-            return jsonify({'error': f'批次状态为 {batch.status}，无法提交检验结果'}), 400
+        # Allow both pending and inspected status batches to submit inspection results
+        allowed_statuses = ['pending', 'inspected']
+        if batch.status not in allowed_statuses:
+            return jsonify({'error': f'Batch status is {batch.status}. Only pending or inspected batches can be inspected'}), 400
         
-        # 获取请求数据
+        # 3. Request data validation
         data = request.get_json()
+        
         if not data:
-            return jsonify({'error': '请求数据为空'}), 400
+            return jsonify({'error': 'Request data is empty'}), 400
         
-        # 验证必填字段
-        required_fields = ['result', 'file_url']
-        for field in required_fields:
-            if field not in data or not data[field]:
-                return jsonify({'error': f'缺少必填字段: {field}'}), 400
+        if 'result' not in data or not data['result']:
+            return jsonify({'error': 'Missing required field: result'}), 400
         
-        # 验证检验结果
         valid_results = ['passed', 'failed', 'needs_recheck']
         if data['result'] not in valid_results:
-            return jsonify({'error': f'无效的检验结果: {data["result"]}'}), 400
+            return jsonify({'error': f'Invalid inspection result: {data["result"]}'}), 400
         
-        # 解析检验日期
+        # 4. Process data
         insp_date = data.get('insp_date')
         if insp_date:
             try:
                 insp_date = datetime.fromisoformat(insp_date.replace('Z', '+00:00'))
+                # Convert to local timezone (Sydney)
+                import pytz
+                utc = pytz.UTC
+                sydney_tz = pytz.timezone('Australia/Sydney')
+                if insp_date.tzinfo is None:
+                    insp_date = utc.localize(insp_date)
+                insp_date = insp_date.astimezone(sydney_tz)
             except ValueError:
-                return jsonify({'error': '无效的检验日期格式'}), 400
+                return jsonify({'error': 'Invalid inspection date format'}), 400
         else:
-            insp_date = datetime.utcnow()
+            # Use Sydney timezone for current time
+            import pytz
+            sydney_tz = pytz.timezone('Australia/Sydney')
+            insp_date = datetime.now(sydney_tz)
         
-        # 创建检验记录
+        file_url = data.get('file_url', 'none')
+        notes = data.get('notes', '')
+        
+        # 5. Blockchain operations - must succeed to continue
+        blockchain_tx = None
+        blockchain_inspection_id = None
+        
+        # Connect to blockchain
+        network_config = get_network_config('testnet')
+        w3 = Web3(Web3.HTTPProvider(network_config['rpc_url']))
+        
+        if not w3.is_connected():
+            raise Exception("Failed to connect to blockchain network")
+        
+        # Get InspectionManager contract instance
+        inspection_address = get_contract_address('InspectionManager', 'testnet')
+        inspection_abi = get_contract_abi('InspectionManager')
+        contract = w3.eth.contract(address=inspection_address, abi=inspection_abi)
+        
+        # Get private key and account
+        private_key = DEVELOPMENT_PRIVATE_KEYS.get('inspector1')
+        if not private_key:
+            private_key = DEVELOPMENT_PRIVATE_KEYS.get('owner')
+        
+        if not private_key:
+            raise Exception("No private key configured for inspection transactions")
+        
+        account = w3.eth.account.from_key(private_key)
+        gas_price = w3.to_wei('20', 'gwei')
+        
+        # Step 1: Create inspection record
+        create_transaction = contract.functions.createInspection(
+            batch_id,
+            file_url,
+            notes
+        ).build_transaction({
+            'from': account.address,
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'gas': 500000,
+            'gasPrice': gas_price,
+        })
+        
+        # Sign and send create inspection transaction
+        signed_create_txn = w3.eth.account.sign_transaction(create_transaction, private_key)
+        create_tx_hash = w3.eth.send_raw_transaction(signed_create_txn.raw_transaction)
+        
+        # Wait for create transaction confirmation
+        create_receipt = w3.eth.wait_for_transaction_receipt(create_tx_hash, timeout=120)
+        
+        if create_receipt.status != 1:
+            raise Exception("Create inspection transaction failed")
+        
+        # Try to parse event logs to get inspection ID, fallback to contract query if failed
+        blockchain_inspection_id = None
+        try:
+            for log in create_receipt.logs:
+                try:
+                    decoded_log = contract.events.InspectionCreated().processLog(log)
+                    blockchain_inspection_id = decoded_log['args']['inspectionId']
+                    break
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        
+        # If event parsing failed, use contract query method to get latest inspection ID
+        if not blockchain_inspection_id:
+            try:
+                total_inspections = contract.functions.getTotalInspections().call()
+                blockchain_inspection_id = total_inspections  # Latest created inspection ID
+            except Exception:
+                blockchain_inspection_id = 1  # Default fallback
+        
+        # Step 2: Complete inspection record
+        result_mapping = {
+            'passed': 1,         # InspectionResult.PASSED
+            'failed': 2,         # InspectionResult.FAILED  
+            'needs_recheck': 3   # InspectionResult.NEEDS_RECHECK
+        }
+        result_value = result_mapping.get(data['result'], 0)
+        
+        # Only passed and failed need to complete inspection (needs_recheck stays pending)
+        if data['result'] in ['passed', 'failed']:
+            # Build complete inspection transaction
+            complete_transaction = contract.functions.completeInspection(
+                blockchain_inspection_id,
+                result_value,
+                file_url,
+                notes
+            ).build_transaction({
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gas': 500000,
+                'gasPrice': gas_price,
+            })
+            
+            # Sign and send complete inspection transaction
+            signed_complete_txn = w3.eth.account.sign_transaction(complete_transaction, private_key)
+            complete_tx_hash = w3.eth.send_raw_transaction(signed_complete_txn.raw_transaction)
+            
+            # Wait for complete transaction confirmation
+            complete_receipt = w3.eth.wait_for_transaction_receipt(complete_tx_hash, timeout=120)
+            
+            if complete_receipt.status != 1:
+                raise Exception("Complete inspection transaction failed")
+            
+            blockchain_tx = complete_tx_hash.hex()
+        else:
+            # needs_recheck - only create record, don't complete
+            blockchain_tx = create_tx_hash.hex()
+        
+        # 6. Save to database only after blockchain success
         inspection = Inspection(
             batch_id=batch_id,
             inspector_id=current_user_id,
             result=data['result'],
-            file_url=data['file_url'],
-            notes=data.get('notes', ''),
+            file_url=file_url,
+            notes=notes,
             insp_date=insp_date
         )
         
-        # 区块链上链操作
-        blockchain_tx = None
-        blockchain_inspection_id = None
-        
-        try:
-            # 获取区块链服务
-            blockchain_service = get_blockchain_service()
-            
-            # 检查是否有区块链账户
-            if blockchain_service.account:
-                # 检查检验员权限
-                inspector_address = blockchain_service.get_account_address()
-                if not blockchain_service.is_authorized_inspector(inspector_address):
-                    logger.warning(f"检验员 {inspector_address} 未在区块链上授权")
-                    return jsonify({'error': '检验员未在区块链上授权'}), 403
-                
-                # 如果批次有区块链记录，尝试上链
-                if batch.blockchain_tx:
-                    try:
-                        # 创建检验记录上链
-                        blockchain_tx, blockchain_inspection_id = blockchain_service.create_inspection_on_chain(
-                            batch_id=batch_id,  # 使用数据库ID作为区块链批次ID
-                            file_url=data['file_url'],
-                            notes=data.get('notes', '')
-                        )
-                        
-                        # 如果检验结果是通过或失败，立即完成检验
-                        if data['result'] in ['passed', 'failed']:
-                            blockchain_service.complete_inspection_on_chain(
-                                inspection_id=blockchain_inspection_id,
-                                result=data['result'],
-                                file_url=data['file_url'],
-                                notes=data.get('notes', '')
-                            )
-                        
-                        inspection.blockchain_tx = blockchain_tx
-                        logger.info(f"检验记录已上链: {blockchain_tx}")
-                        
-                    except (BlockchainError, ContractNotFoundError) as e:
-                        logger.error(f"区块链操作失败: {str(e)}")
-                        # 区块链操作失败不影响数据库操作，继续执行
-                        inspection.blockchain_tx = None
-                else:
-                    logger.info("批次未上链，跳过区块链操作")
-            else:
-                logger.info("未配置区块链账户，跳过区块链操作")
-                
-        except Exception as e:
-            logger.error(f"区块链操作异常: {str(e)}")
-            # 区块链操作失败不影响数据库操作
-            inspection.blockchain_tx = None
-        
-        # 保存检验记录到数据库
+        # Save blockchain transaction hash
+        inspection.blockchain_tx = blockchain_tx
         db.session.add(inspection)
         
-        # 更新批次状态
+        # Update batch status
+        old_status = batch.status
         if data['result'] == 'passed':
             batch.status = 'approved'
         elif data['result'] == 'failed':
@@ -159,12 +227,11 @@ def submit_inspection(batch_id):
         else:  # needs_recheck
             batch.status = 'inspected'
         
-        # 提交数据库事务
         db.session.commit()
         
-        # 构建响应
+        # 7. Build response
         response_data = {
-            'message': '检验结果提交成功',
+            'message': 'Inspection result submitted successfully',
             'inspection': {
                 'id': inspection.id,
                 'batch_id': inspection.batch_id,
@@ -181,27 +248,24 @@ def submit_inspection(batch_id):
                 'id': batch.id,
                 'batch_number': batch.batch_number,
                 'status': batch.status,
-                'updated_at': batch.updated_at.isoformat()
-            }
-        }
-        
-        if blockchain_tx:
-            response_data['blockchain'] = {
+                'updated_at': getattr(batch, 'updated_at', batch.created_at).isoformat()
+            },
+            'blockchain': {
+                'success': True,
                 'tx_hash': blockchain_tx,
                 'inspection_id': blockchain_inspection_id,
-                'message': '检验结果已上链'
+                'message': 'Inspection result synced to blockchain and database'
             }
+        }
         
         return jsonify(response_data), 201
         
     except SQLAlchemyError as e:
         db.session.rollback()
-        logger.error(f"数据库操作失败: {str(e)}")
-        return jsonify({'error': '数据库操作失败'}), 500
+        return jsonify({'error': 'Database operation failed', 'details': str(e)}), 500
     except Exception as e:
         db.session.rollback()
-        logger.error(f"提交检验结果失败: {str(e)}")
-        return jsonify({'error': '提交检验结果失败'}), 500
+        return jsonify({'error': 'Failed to submit inspection result', 'message': 'Blockchain or database operation failed', 'details': str(e)}), 500
 
 @inspection_bp.route('/batches/<int:batch_id>/inspections', methods=['GET'])
 @jwt_required()
@@ -245,7 +309,7 @@ def get_batch_inspections(batch_id):
                 'insp_date': inspection.insp_date.isoformat(),
                 'blockchain_tx': inspection.blockchain_tx,
                 'created_at': inspection.created_at.isoformat(),
-                'updated_at': inspection.updated_at.isoformat()
+                'updated_at': getattr(inspection, 'updated_at', inspection.created_at)
             })
         
         return jsonify({
