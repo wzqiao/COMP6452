@@ -13,7 +13,6 @@ import logging
 from models.batch import Batch
 from models.inspection import Inspection
 from models.user import User
-from blockchain import get_blockchain_service, BlockchainError, ContractNotFoundError
 from extensions import db
 from web3 import Web3
 from deploy_config import (
