@@ -6,6 +6,7 @@
 |                | POST | `/auth/login`                   | 登录、发 JWT                         | ☑️                 |
 |                | POST | `/auth/wallet`                  | 绑定钱包地址                           | ☑️ |
 | **File**       | POST | `https://wvdam1xz7a.execute-api.ap-southeast-2.amazonaws.com/default/UploadPdf_6452`                       | 生成 S3 预签名 URL                    | ☑️         |
+| |PUT | `{url response from lambda}` | 上传pdf文件的地址| ☑️ |
 | **Batch**      | POST | `/batches`                      | 创建批次（metadata）                   | ☑️             |
 |                | GET  | `/batches/{id}`            | 查询单批次详情（metadata＋inspections）    | ☑️                 |
 | **Inspection** | POST | `/batches/{id}/inspection` | 提交检验结果 `pass│fail` ＋ PDF URL，并写链 | ☑️            |
