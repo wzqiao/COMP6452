@@ -92,7 +92,7 @@ def submit_inspection(batch_id):
             sydney_tz = pytz.timezone('Australia/Sydney')
             insp_date = datetime.now(sydney_tz)
         
-        file_url = data.get('file_url', 'none')
+        file_url = data.get('file_url') or 'none'  # Ensure it's never None
         notes = data.get('notes', '')
         
         # 5. Blockchain operations - must succeed to continue

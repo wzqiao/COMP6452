@@ -112,6 +112,13 @@ export default function InspectionDetailPage({ onLogout }) {
     try {
       let fileUrl = inspection?.file_url || null;
   
+      // Validate that a file must be uploaded for new inspections
+      if (!fileUrl && !file) {
+        setError("Please upload a PDF file before submitting the inspection result.");
+        setSubmitting(false);
+        return;
+      }
+  
       if (file) {
         setUploading(true);
         fileUrl = await uploadPdfToExternal(file);
@@ -208,12 +215,26 @@ export default function InspectionDetailPage({ onLogout }) {
           <UploadCloud className="me-2 text-primary" size={18} />
           Upload new report and update results
         </h5>
-        <input
-          type="file"
-          accept="application/pdf"
-          onChange={handleFileChange}
-          disabled={uploading || submitting}
-        />
+        <div className="mb-3">
+          <label className="form-label">
+            PDF Report <span className="text-danger">*</span>
+            {!inspection?.file_url && (
+              <small className="text-muted"> (Required for new inspections)</small>
+            )}
+          </label>
+          <input
+            type="file"
+            className="form-control"
+            accept="application/pdf"
+            onChange={handleFileChange}
+            disabled={uploading || submitting}
+          />
+          {file && (
+            <small className="text-success">
+              ✓ File selected: {file.name}
+            </small>
+          )}
+        </div>
         <textarea
           className="form-control mb-3"
           rows={3}
@@ -242,7 +263,8 @@ export default function InspectionDetailPage({ onLogout }) {
           <button
             className="btn btn-success"
             onClick={() => handleUpdate("passed")}
-            disabled={submitting || uploading}
+            disabled={submitting || uploading || (!inspection?.file_url && !file)}
+            title={(!inspection?.file_url && !file) ? "Please upload a PDF file first" : ""}
           >
             <CheckCircle className="me-1" size={18} />
               Pass
@@ -250,7 +272,8 @@ export default function InspectionDetailPage({ onLogout }) {
           <button
             className="btn btn-danger"
             onClick={() => handleUpdate("failed")}
-            disabled={submitting || uploading}
+            disabled={submitting || uploading || (!inspection?.file_url && !file)}
+            title={(!inspection?.file_url && !file) ? "Please upload a PDF file first" : ""}
           >
             <XCircle className="me-1" size={18} />
               Failed
@@ -258,7 +281,8 @@ export default function InspectionDetailPage({ onLogout }) {
           <button
             className="btn btn-warning text-dark"
             onClick={() => handleUpdate("needs_recheck")}
-            disabled={submitting || uploading}
+            disabled={submitting || uploading || (!inspection?.file_url && !file)}
+            title={(!inspection?.file_url && !file) ? "Please upload a PDF file first" : ""}
           >
           <AlertTriangle className="me-1" size={18} />
             Need re-examination
